@@ -1,5 +1,9 @@
 import type { VehicleData } from '../units/types';
-import type { TerrainType } from '../terrain/types';
+import { TERRAIN_DATA, type TerrainType, type CoverLevel } from '../terrain/types';
+import type { Force, StaggeredFormationOrder } from './force';
+export type { Force, StaggeredFormationOrder };
+export type { ForceGrade } from './force';
+export { FORCE_GRADE_MODIFIER } from './force';
 
 export interface HexData {
   terrain: TerrainType;
@@ -10,6 +14,14 @@ export interface HexData {
 /** Key format used in hexMap: `${q},${r}` */
 export function hexKey(q: number, r: number): string {
   return `${q},${r}`;
+}
+
+export function coverForUnit(
+  unit: Pick<Unit, 'q' | 'r'>,
+  hexMap: Record<string, HexData>
+): CoverLevel {
+  const hex = hexMap[hexKey(unit.q, unit.r)];
+  return hex ? TERRAIN_DATA[hex.terrain].cover : 'none';
 }
 
 /** Sequence of Play phases, see 4.0 */
@@ -54,18 +66,30 @@ export interface Unit {
   /** Facing direction 0-5 (0 = north for flat-top, conventions per honeycomb-grid) */
   facing: HexDirection;
   command: Command;
+  lastCommand: Command;
   damage: DamageState;
   spotStatus: SpotStatus;
   /** Has this unit already executed its command this turn? */
   hasActed: boolean;
+  /** False for unarmed vehicles (trucks, prime movers) — 4.1.1 */
+  canSpot: boolean;
+  /** Set to true when the unit moved this turn; used for SPOT/MOVE counter — 4.1.3 */
+  moved: boolean;
+  /** Set to true when the unit fired this turn; used for SPOT/FIRE counter — 4.1.3 */
+  fired: boolean;
 }
 
 export interface GameState {
   turn: number;
   currentPhase: Phase;
-  firstPlayer: Side | null; // determined in Initiative Phase
-  units: Record<string, Unit>; // keyed by instanceId
-  blueprints: Record<string, VehicleData>; // keyed by blueprintId
+  firstPlayer: Side | null;
+  /** The two opposing forces (always [allied, axis]) */
+  forces: [Force, Force];
+  units: Record<string, Unit>;
+  blueprints: Record<string, VehicleData>;
   selectedUnitId: string | null;
-  hexMap: Record<string, HexData>; // keyed by hexKey(q, r)
+  hexMap: Record<string, HexData>;
+  spottingPairs: { spotter: string; target: string }[];
+  /** Direct fire order from last Staggered Initiative; inverted for Movement Phase */
+  formationFireOrder: StaggeredFormationOrder[];
 }

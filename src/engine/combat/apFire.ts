@@ -6,8 +6,9 @@
  */
 
 import type {
-  Weapon,
+  KEAmmo,
   Ammo,
+  APDamageThresholds,
   RangeFactor,
   CoverType,
   TargetSize,
@@ -141,24 +142,23 @@ export function getAPHitNumber(
 
 /**
  * Determine penetration result vs target armor, see 4.4.3.2.5–6.
- * Compares penetration to armor and returns the damage outcome.
+ * Thresholds come from the ammo's damage field on the Data Card.
  */
 export function resolveAPDamage(
   penetration: number,
   armor: number,
+  thresholds: APDamageThresholds,
 ): DamageOutcome {
   const delta = penetration - armor;
   if (delta < 0) return 'none';
-  if (delta <= 3) return 'damaged';
-  if (delta <= 9) return 'ko';
+  if (delta <= thresholds.ND) return 'none';
+  if (delta <= thresholds.DM[1]) return 'damaged';
+  if (delta <= thresholds.KO[1]) return 'ko';
   return 'bu';
 }
 
-/**
- * Get penetration value for a given range factor.
- * Per 4.4.3.2.5, penetration is read from the P-Penetration sub-row.
- */
-export function getPenetration(ammo: Ammo, rangeFactor: RangeFactor): number {
+/** Get penetration value for a given range factor from a KE ammo entry. */
+export function getPenetration(ammo: KEAmmo, rangeFactor: RangeFactor): number {
   return ammo.penetration[rangeFactor];
 }
 
@@ -167,8 +167,8 @@ export function getPenetration(ammo: Ammo, rangeFactor: RangeFactor): number {
  * In production, pass a seeded PRNG; in tests, pass a fixed value.
  */
 export interface ResolveAPFireInput {
-  weapon: Weapon;
-  ammoType: 'AP' | 'APCR' | 'HEAT';
+  ammo: KEAmmo[];
+  ammoType: 'AP' | 'APCR' | 'HEAT' | 'HVAP';
   range: number;
   targetArmor: number; // already-selected facing's armor factor
   context: APHitContext;
@@ -183,8 +183,8 @@ export interface ResolveAPFireOutput {
 }
 
 export function resolveAPFire(input: ResolveAPFireInput): ResolveAPFireOutput {
-  const ammo = input.weapon.ammo.find((a) => a.type === input.ammoType);
-  if (!ammo) throw new Error(`Weapon has no ${input.ammoType} ammo`);
+  const ammo = input.ammo.find((a) => a.type === input.ammoType);
+  if (!ammo) throw new Error(`No ${input.ammoType} ammo available`);
 
   const rangeFactor = getRangeFactor(input.range, ammo);
   if (rangeFactor === null) {
@@ -208,7 +208,7 @@ export function resolveAPFire(input: ResolveAPFireInput): ResolveAPFireOutput {
   }
 
   const penetration = getPenetration(ammo, rangeFactor);
-  const damage = resolveAPDamage(penetration, input.targetArmor);
+  const damage = resolveAPDamage(penetration, input.targetArmor, ammo.damage);
 
   return { outOfRange: false, hit, damage };
 }

@@ -1,38 +1,43 @@
 /**
  * Core domain types for Panzer.
  *
- * Modelled directly from the Consolidated Rules (May 2025).
- * Section references in comments point to the rulebook.
+ * Structure mirrors the GMT Data Card layout:
+ *   - Offensive Information table (ammo, range, penetration, damage)
+ *   - Defensive Information table (armor per facing × elevation)
  */
 
 export type Nation = 'german' | 'soviet' | 'us' | 'british' | 'italian';
 
-/** Target Size modifier — see 4.4.3.2.2 / Defensive Information section */
+/** Target Size modifier — Defensive Information section */
 export type TargetSize = -2 | -1 | 0 | 1 | 2;
 
 /** Cover types, see 4.1.3 / Terrain Effects Table */
-export type CoverType = 'none' | 'light' | 'medium' | 'heavy';
+export type { CoverLevel as CoverType } from '../terrain/types';
 
 /** AP Range Factors, see 4.4.3.2.1 */
 export type RangeFactor = 'P' | 'S' | 'M' | 'L' | 'E';
 
-/** Field-of-Fire types, see 4.4.3.1 */
+/**
+ * Field-of-Fire types, see 4.4.3.1.
+ *   turret        — 360° rotating turret
+ *   turretless360 — no turret but full 360° coverage
+ *   frontFixed    — Non-Turreted, limited front arc (StuG, SU-76, etc.)
+ *   rearFixed     — Non-Turreted, limited rear arc
+ *
+ * TODO: verify whether the rulebook draws a further distinction between a
+ * completely fixed casemate (zero traverse) and a limited-traverse mount;
+ * if so, 'nonTurreted' may need to be added as a separate value.
+ */
 export type FieldOfFire = 'turret' | 'turretless360' | 'frontFixed' | 'rearFixed';
 
-/** Ammo types — Basic Game uses AP only, more in Advanced Game */
-export type AmmoType = 'AP' | 'APCR' | 'HEAT' | 'HE' | 'SMOKE';
+/** Movement type: T=tracked, H=half-track, W=wheeled, L=leg */
+export type MovementType = 'T' | 'H' | 'W' | 'L';
 
-/** Range thresholds: at what hex distance does each Range Factor end? */
+/** Rate of Fire: N=normal, S=slow, R=rapid, RR=very rapid */
+export type RateOfFire = 'N' | 'S' | 'R' | 'RR';
+
+/** Range breakpoints: hex distance at which each Range Factor ends */
 export interface RangeThresholds {
-  P: number; // Pointblank max range
-  S: number; // Short max range
-  M: number; // Medium max range
-  L: number; // Long max range
-  E: number; // Extreme max range (== max range overall)
-}
-
-/** Penetration values per Range Factor */
-export interface PenetrationByRange {
   P: number;
   S: number;
   M: number;
@@ -40,36 +45,115 @@ export interface PenetrationByRange {
   E: number;
 }
 
-export interface Ammo {
-  type: AmmoType;
+/** A numeric value per Range Factor (penetration, firepower, etc.) */
+export interface ByRange {
+  P: number;
+  S: number;
+  M: number;
+  L: number;
+  E: number;
+}
+
+/**
+ * AP Damage thresholds per ammo type — pen−armor delta bands, see 4.4.3.2.6.
+ * delta < 0          → no penetration ('none')
+ * delta <= ND        → penetrated but no effect ('none')
+ * delta in DM range  → Damaged
+ * delta in KO range  → Knocked Out
+ * delta in BU range  → Brew-Up (values above BU[1] also count as BU)
+ */
+export interface APDamageThresholds {
+  ND: number;
+  DM: [number, number];
+  KO: [number, number];
+  BU: [number, number];
+}
+
+/** KE (Kinetic Energy) ammo: AP, HVAP, APCR, HEAT */
+export interface KEAmmo {
+  type: 'AP' | 'HVAP' | 'APCR' | 'HEAT';
+  label: string;
+  availability?: string; // scenario/date note, e.g. "A" = from early-43
   ranges: RangeThresholds;
-  penetration: PenetrationByRange;
+  penetration: ByRange;
+  damage: APDamageThresholds;
 }
 
-export interface Weapon {
-  name: string;
-  caliber: string;
-  fieldOfFire: FieldOfFire;
-  /** Stabilization rating, see 4.4.3.2.2. 0 means -4 modifier on Short Halt */
-  stabilization: number;
-  ammo: Ammo[];
+/** GP (General Purpose) ammo: HE, Smoke */
+export interface GPAmmo {
+  type: 'GP' | 'SMOKE';
+  label: string;
+  ranges: RangeThresholds;
+  firepower: ByRange;
 }
 
+export type Ammo = KEAmmo | GPAmmo;
+
+/**
+ * Armor values for Front / Rear angles — no side columns.
+ * Matches the left table on the Data Card.
+ */
+export interface ArmorValuesFR {
+  TF: number;   // Tank Front
+  TR: number;   // Tank Rear
+  HF: number;   // Hull Front
+  HR: number;   // Hull Rear
+  Dk?: number;  // Deck (fall angle only)
+}
+
+/**
+ * Armor values for Front+Side / Rear+Side angles — side columns required.
+ * Matches the right table on the Data Card.
+ */
+export interface ArmorValuesFRS {
+  TF: number;   // Tank Front
+  TR: number;   // Tank Rear
+  HF: number;   // Hull Front
+  HR: number;   // Hull Rear
+  TS: number;   // Tank Side
+  HS: number;   // Hull Side
+  Dk?: number;  // Deck (fall angle only)
+}
+
+export interface ArmorByElevation<T> {
+  level: T;
+  rise: T;
+  fall: T;
+}
+
+/** Full Defensive Information table from the Data Card */
 export interface VehicleArmor {
-  /** Front armor factor, see 4.4.3.2.5 / Notes section */
-  front: number;
-  rear: number;
+  GPD: string;                                             // GP Defense factor, e.g. "2P"
+  frontOrRear: ArmorByElevation<ArmorValuesFR>;            // Front or Rear facing
+  frontSideOrRearSide: ArmorByElevation<ArmorValuesFRS>;   // Front/Side or Rear/Side facing
 }
 
+/** Full vehicle blueprint — matches the Data Card layout */
 export interface VehicleData {
   id: string;
   name: string;
   nation: Nation;
   size: TargetSize;
+
+  // Gun / Offensive header
+  gun: string;           // e.g. "76.2mm L/43"
+  Tt: number;            // Turret traverse
+  Sb: number;            // Stabilization
+  St: string;            // Stabilizer type ("O" = open mount, etc.)
+  RoF: RateOfFire;       // Rate of Fire
+  ammoCard: string;      // Game Card reference, e.g. "A3"
+  fieldOfFire: FieldOfFire;
+
+  // Movement
+  movementType: MovementType;
+  movementSlow: number;
+  movementFast: number;
+
+  weight: number;        // tonnes
+  buValue: number;       // Brew-Up threshold printed on game counter
+
+  ammo: Ammo[];
   armor: VehicleArmor;
-  weapons: Weapon[];
-  /** Movement speed allowance, see 4.5.1 */
-  movementSpeed: number;
-  /** Optional sprite/icon path */
+
   spriteUrl?: string;
 }

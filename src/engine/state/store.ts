@@ -1,11 +1,23 @@
 import { create } from 'zustand';
-import type { GameState, Unit, Phase, Command, HexData } from './types';
-import { hexKey } from './types';
+import type { GameState, Unit, Phase, Command, HexData, Force, StaggeredFormationOrder } from './types';
+import { hexKey, FORCE_GRADE_MODIFIER } from './types';
 import { VEHICLE_BLUEPRINTS } from '../units/blueprints';
-import type { TerrainType } from '../terrain/types';
+import type { TerrainType, TerrainMap, HexTile } from '../terrain/types';
+import { runSpottingPhase } from '../spotting/phase';
+import type { BasicInitiativeResult, AdvancedInitiativeResult, StaggeredInitiativeResult } from '../initiative/types';
+import { resolveBasicInitiative, resolveAdvancedInitiative, resolveStaggeredInitiative } from '../initiative/phase';
+import type { StaggeredRoundInput } from '../initiative/phase';
 
 export const MAP_WIDTH = 22;
 export const MAP_HEIGHT = 34;
+
+interface RollInitiativeOptions {
+  mode: 'basic' | 'advanced';
+}
+
+interface RollStaggeredInitiativeOptions {
+  rounds: Array<{ alliedFormationId: string; axisFormationId: string }>;
+}
 
 interface GameStore extends GameState {
   // Actions
@@ -13,6 +25,10 @@ interface GameStore extends GameState {
   assignCommand: (instanceId: string, command: Command) => void;
   advancePhase: () => void;
   resetGame: () => void;
+  /** Roll initiative for Basic (4.3.1) or Advanced (6.3.1) mode. */
+  rollInitiative: (options: RollInitiativeOptions) => BasicInitiativeResult | AdvancedInitiativeResult;
+  /** Roll Staggered Initiative (7.42) given the ordered formation pairings. */
+  rollStaggeredInitiative: (options: RollStaggeredInitiativeOptions) => StaggeredInitiativeResult;
 }
 
 const PHASE_ORDER: Phase[] = [
@@ -27,6 +43,23 @@ const PHASE_ORDER: Phase[] = [
 function nextPhase(current: Phase): Phase {
   const idx = PHASE_ORDER.indexOf(current);
   return PHASE_ORDER[(idx + 1) % PHASE_ORDER.length]!;
+}
+
+function toTerrainMap(hexMap: Record<string, HexData>): TerrainMap {
+  const map: TerrainMap = new Map();
+  for (const [key, data] of Object.entries(hexMap)) {
+    const [q, r] = key.split(',').map(Number) as [number, number];
+    const tile: HexTile = {
+      q,
+      r,
+      terrain: data.terrain,
+      hillLevel: data.elevation,
+      hasRoad: data.terrain === 'road',
+      hasPath: data.terrain === 'path',
+    };
+    map.set(key, tile);
+  }
+  return map;
 }
 
 function patch(
@@ -75,6 +108,22 @@ function generateMap(): Record<string, HexData> {
   return map;
 }
 
+function rollD100(): number {
+  return Math.floor(Math.random() * 100) + 1;
+}
+
+/** Generate enough roll pairs to virtually guarantee a non-tie outcome. */
+function generateRollPairs(count = 10): [number, number][] {
+  return Array.from({ length: count }, () => [rollD100(), rollD100()]);
+}
+
+function makeInitialForces(): [Force, Force] {
+  return [
+    { side: 'allied', grade: 'Seasoned', unitIds: ['t34_1'], pointCost: 0 },
+    { side: 'axis',   grade: 'Seasoned', unitIds: ['pziv_1'], pointCost: 0 },
+  ];
+}
+
 function makeInitialUnits(): Record<string, Unit> {
   return {
     t34_1: {
@@ -85,9 +134,13 @@ function makeInitialUnits(): Record<string, Unit> {
       r: 4,
       facing: 0,
       command: 'NO_COMMAND',
+      lastCommand: 'NO_COMMAND',
       damage: 'ok',
       spotStatus: 'unspotted',
       hasActed: false,
+      canSpot: true,
+      moved: false,
+      fired: false,
     },
     pziv_1: {
       instanceId: 'pziv_1',
@@ -97,21 +150,28 @@ function makeInitialUnits(): Record<string, Unit> {
       r: 5,
       facing: 3,
       command: 'NO_COMMAND',
+      lastCommand: 'NO_COMMAND',
       damage: 'ok',
       spotStatus: 'unspotted',
       hasActed: false,
+      canSpot: true,
+      moved: false,
+      fired: false,
     },
   };
 }
 
-export const useGameStore = create<GameStore>((set) => ({
+export const useGameStore = create<GameStore>((set, get) => ({
   turn: 1,
   currentPhase: 'SPOTTING',
   firstPlayer: null,
+  forces: makeInitialForces(),
   units: makeInitialUnits(),
   blueprints: VEHICLE_BLUEPRINTS,
   selectedUnitId: null,
   hexMap: generateMap(),
+  spottingPairs: [],
+  formationFireOrder: [],
 
   selectUnit: (instanceId) => set({ selectedUnitId: instanceId }),
 
@@ -122,25 +182,93 @@ export const useGameStore = create<GameStore>((set) => ({
       return {
         units: {
           ...state.units,
-          [instanceId]: { ...unit, command },
+          [instanceId]: { ...unit, lastCommand: unit.command, command },
         },
       };
     }),
 
   advancePhase: () =>
-    set((state) => ({
-      currentPhase: nextPhase(state.currentPhase),
-      turn:
-        state.currentPhase === 'ADJUSTMENT' ? state.turn + 1 : state.turn,
-    })),
+    set((state) => {
+      const next = nextPhase(state.currentPhase);
+      const isTurnEnd = state.currentPhase === 'ADJUSTMENT';
+
+      if (next !== 'SPOTTING') {
+        return { currentPhase: next, turn: isTurnEnd ? state.turn + 1 : state.turn };
+      }
+
+      // Entering SPOTTING: compute spots using last turn's moved/fired, then reset them.
+      const terrainMap = toTerrainMap(state.hexMap);
+      const unitList = Object.values(state.units);
+      const result = runSpottingPhase(unitList, terrainMap);
+
+      const updatedUnits: Record<string, Unit> = {};
+      for (const unit of unitList) {
+        updatedUnits[unit.instanceId] = {
+          ...unit,
+          spotStatus: result.statusByUnit.get(unit.instanceId) ?? unit.spotStatus,
+          moved: false,
+          fired: false,
+        };
+      }
+
+      return {
+        currentPhase: next,
+        turn: isTurnEnd ? state.turn + 1 : state.turn,
+        units: updatedUnits,
+        spottingPairs: result.pairs.map((p) => ({ spotter: p.spotter, target: p.target })),
+      };
+    }),
+
+  rollInitiative: ({ mode }) => {
+    const { forces } = get();
+    const allied = forces[0];
+    const axis = forces[1];
+    const pairs = generateRollPairs();
+
+    if (mode === 'basic') {
+      const result = resolveBasicInitiative(pairs);
+      set({ firstPlayer: result.firstPlayer });
+      return result;
+    }
+
+    const result = resolveAdvancedInitiative(pairs, allied.grade, axis.grade);
+    set({ firstPlayer: result.firstPlayer });
+    return result;
+  },
+
+  rollStaggeredInitiative: ({ rounds }) => {
+    const { forces } = get();
+    const allied = forces[0];
+    const axis = forces[1];
+
+    const roundInputs: StaggeredRoundInput[] = rounds.map((r) => ({
+      alliedFormationId: r.alliedFormationId,
+      axisFormationId: r.axisFormationId,
+      rollPairs: generateRollPairs(),
+    }));
+
+    const result = resolveStaggeredInitiative(roundInputs, allied.grade, axis.grade);
+
+    const formationFireOrder: StaggeredFormationOrder[] = result.rounds.map((r) => ({
+      alliedFormationId: r.alliedFormationId,
+      axisFormationId: r.axisFormationId,
+      winner: r.winner,
+    }));
+
+    set({ firstPlayer: result.firstPlayer, formationFireOrder });
+    return result;
+  },
 
   resetGame: () =>
     set({
       turn: 1,
       currentPhase: 'SPOTTING',
       firstPlayer: null,
+      forces: makeInitialForces(),
       units: makeInitialUnits(),
       selectedUnitId: null,
       hexMap: generateMap(),
+      spottingPairs: [],
+      formationFireOrder: [],
     }),
 }));
