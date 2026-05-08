@@ -36,12 +36,16 @@ const COMMANDS: { cmd: Command; label: string; description: string }[] = [
 ];
 
 export function DataCardPanel() {
-  const selectedUnitId = useGameStore((s) => s.selectedUnitId);
-  const units         = useGameStore((s) => s.units);
-  const blueprints    = useGameStore((s) => s.blueprints);
-  const currentPhase  = useGameStore((s) => s.currentPhase);
-  const spottingPairs = useGameStore((s) => s.spottingPairs);
-  const assignCommand = useGameStore((s) => s.assignCommand);
+  const selectedUnitId   = useGameStore((s) => s.selectedUnitId);
+  const units            = useGameStore((s) => s.units);
+  const blueprints       = useGameStore((s) => s.blueprints);
+  const currentPhase     = useGameStore((s) => s.currentPhase);
+  const spottingPairs    = useGameStore((s) => s.spottingPairs);
+  const fireTargetId     = useGameStore((s) => s.fireTargetId);
+  const assignCommand    = useGameStore((s) => s.assignCommand);
+  const advancePhase     = useGameStore((s) => s.advancePhase);
+  const addFireDeclaration = useGameStore((s) => s.addFireDeclaration);
+  const setFireTarget    = useGameStore((s) => s.setFireTarget);
 
   if (!selectedUnitId) return null;
   const unit = units[selectedUnitId];
@@ -172,6 +176,112 @@ export function DataCardPanel() {
           })}
         </tbody>
       </table>
+
+      {/* Spotting info — only during SPOTTING phase */}
+      {currentPhase === 'SPOTTING' && (
+        <div style={{ borderTop: '1px solid #444', paddingTop: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 'bold', marginBottom: 6, color: '#ccc', fontSize: 11 }}>
+            Phase de Spotting
+          </div>
+          {spottedTargets.length > 0 ? (
+            <>
+              <div style={{ fontSize: 10, marginBottom: 6 }}>
+                <span style={{ color: '#ff9944' }}>
+                  {spottedTargets.length} cible{spottedTargets.length > 1 ? 's' : ''} spottée{spottedTargets.length > 1 ? 's' : ''} :
+                </span>
+                {' '}
+                <span style={{ color: '#aaa' }}>
+                  {spottedTargets
+                    .map((t) => blueprints[t.blueprintId]?.name ?? t.instanceId)
+                    .join(', ')}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>
+              Aucune cible spottée depuis cette unité
+            </div>
+          )}
+          <button
+            onClick={() => advancePhase()}
+            style={{
+              background: '#2a3a2a',
+              color: '#88cc88',
+              border: '1px solid #4a6a4a',
+              padding: '4px 10px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontSize: 11,
+            }}
+          >
+            Spot terminé →
+          </button>
+        </div>
+      )}
+
+      {/* Fire Declaration — only during COMBAT phase */}
+      {currentPhase === 'COMBAT' && (unit.command === 'FIRE' || unit.command === 'SHORT_HALT') && (
+        <div style={{ borderTop: '1px solid #444', paddingTop: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 'bold', marginBottom: 6, color: '#ccc', fontSize: 11 }}>
+            Tir direct
+          </div>
+          {spottedTargets.length === 0 ? (
+            <div style={{ fontSize: 10, color: '#666' }}>Aucune cible spottée</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 10, color: '#aaa', marginBottom: 6 }}>
+                Cliquez une case rouge pour sélectionner la cible
+              </div>
+              {/* Target list */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                {spottedTargets.map((t) => {
+                  const tBp = blueprints[t.blueprintId];
+                  const isActive = t.instanceId === fireTargetId;
+                  return (
+                    <button
+                      key={t.instanceId}
+                      onClick={() => setFireTarget(isActive ? null : t.instanceId)}
+                      style={{
+                        background: isActive ? '#5a2020' : '#2a2a2a',
+                        color: isActive ? '#ffaaaa' : '#aaa',
+                        border: `1px solid ${isActive ? '#aa4444' : '#555'}`,
+                        padding: '3px 8px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: isActive ? 'bold' : 'normal',
+                      }}
+                    >
+                      {tBp?.name ?? t.instanceId}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Declare fire button */}
+              {fireTargetId && (
+                <button
+                  onClick={() => {
+                    addFireDeclaration({ shooterId: unit.instanceId, targetId: fireTargetId });
+                    setFireTarget(null);
+                  }}
+                  style={{
+                    background: '#7a2a2a',
+                    color: '#fff',
+                    border: '1px solid #aa4444',
+                    padding: '5px 12px',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 'bold',
+                  }}
+                >
+                  Déclarer le tir →
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Command Assignment — only during COMMAND phase */}
       {currentPhase === 'COMMAND' && (

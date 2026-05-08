@@ -32,12 +32,23 @@ interface GameStore extends GameState {
   // --- Scenario state ---
   currentScenario: Scenario | null;
   scenarioPhase: ScenarioPhase;
+  /** Which side the human player controls. null until faction is chosen. */
+  humanSide: Side | null;
+  /** Whose deployment turn it currently is. */
+  activeDeploymentSide: Side;
   deploymentConfirmed: { allied: boolean; axis: boolean };
   objectiveState: Record<string, ObjectiveControlState>;
+  /** Unit blueprint+side currently held by the player for hex placement during SETUP. */
+  pendingDeploymentUnit: { blueprintId: string; side: Side } | null;
+
+  /** Enemy unit selected as fire target during COMBAT phase. */
+  fireTargetId: string | null;
 
   // Actions — gameplay
   selectUnit: (instanceId: string | null) => void;
   assignCommand: (instanceId: string, command: Command) => void;
+  moveUnit: (instanceId: string, q: number, r: number) => void;
+  setFireTarget: (instanceId: string | null) => void;
   advancePhase: () => void;
   resetGame: () => void;
   rollInitiative: (options: RollInitiativeOptions) => BasicInitiativeResult | AdvancedInitiativeResult;
@@ -63,6 +74,13 @@ interface GameStore extends GameState {
   confirmDeployment: (side: Side) => void;
   /** Enter any reinforcements due on the current turn (call at Movement Phase start). */
   processReinforcements: () => void;
+  /** Pick up a unit for hex placement during SETUP. Pass null to cancel. */
+  setPendingDeploymentUnit: (unit: { blueprintId: string; side: Side } | null) => void;
+  /**
+   * Choose a faction and trigger AI deployment for the opposing side if it
+   * deploys first (axis always deploys first in this scenario).
+   */
+  setHumanSide: (side: Side) => void;
 }
 
 const PHASE_ORDER: Phase[] = [
@@ -231,6 +249,60 @@ function nextUnitId(blueprintId: string): string {
   return `${blueprintId}_${++_unitCounter}`;
 }
 
+/**
+ * Place all undeployed units for one side randomly in their deployment zone.
+ * Returns new unit instances and their ids — does NOT mutate state.
+ */
+function runAiDeployment(
+  scenario: Scenario,
+  side: Side,
+  existingUnits: Record<string, Unit>,
+  hexMap: Record<string, HexData>,
+): { newUnits: Record<string, Unit>; unitIds: string[] } {
+  const zone = scenario.deploymentZones.find((z) => z.side === side);
+  if (!zone) return { newUnits: {}, unitIds: [] };
+
+  // Available hexes: passable and not yet occupied
+  const available = zone.allowedHexes.filter(({ q, r }) => {
+    const terrain = hexMap[hexKey(q, r)]?.terrain;
+    if (terrain && TERRAIN_DATA[terrain].moveCost >= 99) return false;
+    return !Object.values(existingUnits).some((u) => u.q === q && u.r === r);
+  });
+
+  // Fisher-Yates shuffle
+  for (let i = available.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [available[i], available[j]] = [available[j]!, available[i]!];
+  }
+
+  // Determine which blueprints still need placement
+  const needed: string[] = [];
+  const counts: Record<string, number> = {};
+  for (const def of scenario.initialUnits) {
+    if (def.side !== side || def.suggestedHex) continue;
+    counts[def.blueprintId] = (counts[def.blueprintId] ?? 0) + 1;
+  }
+  for (const u of Object.values(existingUnits)) {
+    if (u.side === side && counts[u.blueprintId]) counts[u.blueprintId]!--;
+  }
+  for (const [bpId, n] of Object.entries(counts))
+    for (let i = 0; i < n; i++) needed.push(bpId);
+
+  const defaultFacing: Record<Side, HexDirection> = { allied: 0, axis: 3 };
+  const newUnits: Record<string, Unit> = {};
+  const unitIds: string[] = [];
+
+  for (let i = 0; i < needed.length && i < available.length; i++) {
+    const bpId = needed[i]!;
+    const { q, r } = available[i]!;
+    const id = nextUnitId(bpId);
+    newUnits[id] = makeUnit(id, bpId, side, q, r, defaultFacing[side]);
+    unitIds.push(id);
+  }
+
+  return { newUnits, unitIds };
+}
+
 function initObjectiveState(scenario: Scenario): Record<string, ObjectiveControlState> {
   const out: Record<string, ObjectiveControlState> = {};
   for (const obj of scenario.objectives)
@@ -290,10 +362,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
   combatPhaseResult: null,
   currentScenario: null,
   scenarioPhase: 'PLAYING',
+  humanSide: null,
+  activeDeploymentSide: 'axis',
   deploymentConfirmed: { allied: false, axis: false },
   objectiveState: {},
+  pendingDeploymentUnit: null,
+  fireTargetId: null,
 
-  selectUnit: (instanceId) => set({ selectedUnitId: instanceId }),
+  selectUnit: (instanceId) => set({ selectedUnitId: instanceId, fireTargetId: null }),
 
   assignCommand: (instanceId, command) =>
     set((state) => {
@@ -307,13 +383,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
       };
     }),
 
+  moveUnit: (instanceId, q, r) =>
+    set((state) => {
+      const unit = state.units[instanceId];
+      if (!unit) return state;
+      return {
+        units: {
+          ...state.units,
+          [instanceId]: { ...unit, q, r, moved: true, hasActed: true },
+        },
+      };
+    }),
+
+  setFireTarget: (instanceId) => set({ fireTargetId: instanceId }),
+
   advancePhase: () =>
     set((state) => {
       const next = nextPhase(state.currentPhase);
       const isTurnEnd = state.currentPhase === 'ADJUSTMENT';
 
       if (next !== 'SPOTTING') {
-        return { currentPhase: next, turn: isTurnEnd ? state.turn + 1 : state.turn };
+        return { currentPhase: next, turn: isTurnEnd ? state.turn + 1 : state.turn, fireTargetId: null };
       }
 
       // Entering SPOTTING: compute spots using last turn's moved/fired, then reset them.
@@ -432,8 +522,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({
       currentScenario: scenario,
       scenarioPhase: 'SETUP',
+      humanSide: null,
+      activeDeploymentSide: 'axis',
       deploymentConfirmed: { allied: false, axis: false },
       objectiveState: initObjectiveState(scenario),
+      pendingDeploymentUnit: null,
       hexMap,
       units,
       forces,
@@ -511,20 +604,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   confirmDeployment: (side) => {
     const state = get();
-    if (state.scenarioPhase !== 'SETUP') return;
+    if (state.scenarioPhase !== 'SETUP' || !state.currentScenario) return;
 
-    const newConfirmed = { ...state.deploymentConfirmed, [side]: true };
+    const aiSide: Side = side === 'allied' ? 'axis' : 'allied';
+    const { newUnits, unitIds } = runAiDeployment(
+      state.currentScenario, aiSide, state.units, state.hexMap,
+    );
 
-    if (newConfirmed.allied && newConfirmed.axis) {
-      set({
-        deploymentConfirmed: newConfirmed,
-        scenarioPhase: 'PLAYING',
-        turn: 1,
-        currentPhase: 'SPOTTING',
-      });
-    } else {
-      set({ deploymentConfirmed: newConfirmed });
-    }
+    set((s) => ({
+      deploymentConfirmed: { allied: true, axis: true },
+      scenarioPhase: 'PLAYING',
+      turn: 1,
+      currentPhase: 'SPOTTING',
+      pendingDeploymentUnit: null,
+      units: { ...s.units, ...newUnits },
+      forces: s.forces.map((f) =>
+        f.side === aiSide ? { ...f, unitIds: [...f.unitIds, ...unitIds] } : f,
+      ) as [Force, Force],
+    }));
   },
 
   processReinforcements: () => {
@@ -566,6 +663,36 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ units: newUnits, forces: newForces });
   },
 
+  setPendingDeploymentUnit: (unit) => set({ pendingDeploymentUnit: unit }),
+
+  setHumanSide: (side) => {
+    const state = get();
+    if (!state.currentScenario) return;
+
+    // Axis always deploys first. If human chose Allied, AI (axis) deploys immediately.
+    const aiSide: Side = side === 'allied' ? 'axis' : 'allied';
+    const axisIsAi = side === 'allied';
+
+    if (axisIsAi) {
+      const { newUnits, unitIds } = runAiDeployment(
+        state.currentScenario, 'axis', state.units, state.hexMap,
+      );
+      set((s) => ({
+        humanSide: side,
+        activeDeploymentSide: 'allied',
+        deploymentConfirmed: { ...s.deploymentConfirmed, axis: true },
+        units: { ...s.units, ...newUnits },
+        forces: s.forces.map((f) =>
+          f.side === 'axis' ? { ...f, unitIds: [...f.unitIds, ...unitIds] } : f,
+        ) as [Force, Force],
+      }));
+    } else {
+      // Human is axis — axis deploys first (human turn), allied (AI) deploys after
+      set({ humanSide: side, activeDeploymentSide: 'axis' });
+    }
+    void aiSide; // suppress unused warning — used implicitly via side logic above
+  },
+
   // ---------------------------------------------------------------------------
 
   resetGame: () =>
@@ -583,7 +710,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       combatPhaseResult: null,
       currentScenario: null,
       scenarioPhase: 'PLAYING',
+      humanSide: null,
+      activeDeploymentSide: 'axis',
       deploymentConfirmed: { allied: false, axis: false },
       objectiveState: {},
+      pendingDeploymentUnit: null,
+      fireTargetId: null,
     }),
 }));

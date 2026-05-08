@@ -11,6 +11,7 @@ import { useGameStore, MAP_WIDTH, MAP_HEIGHT } from '@engine/state/store';
 import { hexKey } from '@engine/state/types';
 import type { Unit } from '@engine/state/types';
 import { TERRAIN_DATA } from '@engine/terrain/types';
+import { computeReachableHexes } from '@engine/movement/reachable';
 
 const HEX_SIZE = 36;
 const GRID_WIDTH = MAP_WIDTH;
@@ -51,6 +52,9 @@ export class HexMapRenderer {
   private unitLabels: Map<string, Text> = new Map();
   private _initialized = false;
   private _pendingDestroy = false;
+  private _movementReachable: Set<string> = new Set();
+  private _spottingTargets: Set<string> = new Set();
+  private _fireTargets: Set<string> = new Set();
 
   private readonly _onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'r' || e.key === 'R') {
@@ -99,6 +103,7 @@ export class HexMapRenderer {
     window.addEventListener('keydown', this._onKeyDown);
 
     this.renderUnits();
+    this.drawDeploymentOverlay();
   }
 
   private drawHexes(): void {
@@ -127,7 +132,47 @@ export class HexMapRenderer {
 
   private handleHexClick(hex: HexInstance): void {
     const state = useGameStore.getState();
-    // Find a unit at this hex
+
+    // SETUP mode: place pending unit
+    if (state.scenarioPhase === 'SETUP' && state.pendingDeploymentUnit) {
+      const { blueprintId, side } = state.pendingDeploymentUnit;
+      const defaultFacing = side === 'allied' ? 0 : 3;
+      const result = state.placeUnitInDeployment(blueprintId, side, hex.q, hex.r, defaultFacing);
+      if (result.ok) state.setPendingDeploymentUnit(null);
+      return;
+    }
+
+    // MOVEMENT phase: move selected unit if hex is reachable
+    if (
+      state.currentPhase === 'MOVEMENT' &&
+      state.selectedUnitId &&
+      this._movementReachable.has(hexKey(hex.q, hex.r))
+    ) {
+      const occupied = Object.values(state.units).some(
+        (u) => u.q === hex.q && u.r === hex.r && u.instanceId !== state.selectedUnitId,
+      );
+      if (!occupied) {
+        state.moveUnit(state.selectedUnitId, hex.q, hex.r);
+        return;
+      }
+    }
+
+    // COMBAT phase: set fire target if hex contains a highlighted enemy
+    if (
+      state.currentPhase === 'COMBAT' &&
+      state.selectedUnitId &&
+      this._fireTargets.has(hexKey(hex.q, hex.r))
+    ) {
+      const enemy = Object.values(state.units).find(
+        (u) => u.q === hex.q && u.r === hex.r,
+      );
+      if (enemy) {
+        state.setFireTarget(enemy.instanceId);
+        return;
+      }
+    }
+
+    // Normal mode: select unit at hex
     const unitAtHex = Object.values(state.units).find(
       (u) => u.q === hex.q && u.r === hex.r,
     );
@@ -157,8 +202,49 @@ export class HexMapRenderer {
       this.updateUnitSprite(sprite, unit);
     }
 
-    // Highlight selected unit
+    // Recompute phase-specific highlights
+    this.updateHighlights(state);
+
+    // Highlight selected unit + phase overlays
     this.drawSelectionOverlay();
+  }
+
+  private updateHighlights(state: ReturnType<typeof useGameStore.getState>): void {
+    this._movementReachable = new Set();
+    this._spottingTargets = new Set();
+    this._fireTargets = new Set();
+
+    const { selectedUnitId, units, blueprints, hexMap, currentPhase, spottingPairs } = state;
+    if (!selectedUnitId) return;
+    const unit = units[selectedUnitId];
+    if (!unit) return;
+
+    if (currentPhase === 'MOVEMENT' && (unit.command === 'MOVE' || unit.command === 'SHORT_HALT') && !unit.hasActed) {
+      const bp = blueprints[unit.blueprintId];
+      if (bp) {
+        this._movementReachable = computeReachableHexes(unit, bp, hexMap);
+        this._movementReachable.delete(hexKey(unit.q, unit.r));
+      }
+    }
+
+    if (currentPhase === 'SPOTTING') {
+      for (const p of spottingPairs) {
+        if (p.spotter !== selectedUnitId) continue;
+        const tUnit = units[p.target];
+        if (tUnit) this._spottingTargets.add(hexKey(tUnit.q, tUnit.r));
+      }
+    }
+
+    if (currentPhase === 'COMBAT' && (unit.command === 'FIRE' || unit.command === 'SHORT_HALT')) {
+      // Highlight spotted enemies that this unit can target
+      for (const p of spottingPairs) {
+        if (p.spotter !== selectedUnitId) continue;
+        const tUnit = units[p.target];
+        if (tUnit && tUnit.side !== unit.side) {
+          this._fireTargets.add(hexKey(tUnit.q, tUnit.r));
+        }
+      }
+    }
   }
 
   private makeUnitSprite(unit: Unit): Container {
@@ -204,6 +290,49 @@ export class HexMapRenderer {
   private drawSelectionOverlay(): void {
     this.overlayLayer.removeChildren();
     const { selectedUnitId, units } = useGameStore.getState();
+
+    // Movement reachable hexes (green fill)
+    for (const key of this._movementReachable) {
+      const [q, r] = key.split(',').map(Number) as [number, number];
+      const hex = this.grid.getHex({ q, r });
+      if (!hex) continue;
+      const g = new Graphics();
+      g.poly(hex.corners.map((c) => ({ x: c.x, y: c.y })));
+      g.fill({ color: 0x44cc44, alpha: 0.35 });
+      g.stroke({ color: 0x88ff88, width: 1.5 });
+      this.overlayLayer.addChild(g);
+    }
+
+    // Spotting targets (orange fill)
+    for (const key of this._spottingTargets) {
+      const [q, r] = key.split(',').map(Number) as [number, number];
+      const hex = this.grid.getHex({ q, r });
+      if (!hex) continue;
+      const g = new Graphics();
+      g.poly(hex.corners.map((c) => ({ x: c.x, y: c.y })));
+      g.fill({ color: 0xff8800, alpha: 0.40 });
+      g.stroke({ color: 0xffcc44, width: 1.5 });
+      this.overlayLayer.addChild(g);
+    }
+
+    // Fire targets (red fill)
+    const { fireTargetId, units: stateUnits } = useGameStore.getState();
+    for (const key of this._fireTargets) {
+      const [q, r] = key.split(',').map(Number) as [number, number];
+      const hex = this.grid.getHex({ q, r });
+      if (!hex) continue;
+      // Check if this hex holds the currently selected fire target
+      const isSelected = fireTargetId !== null &&
+        Object.values(stateUnits).some(
+          (u) => u.instanceId === fireTargetId && u.q === q && u.r === r,
+        );
+      const g = new Graphics();
+      g.poly(hex.corners.map((c) => ({ x: c.x, y: c.y })));
+      g.fill({ color: 0xff2222, alpha: isSelected ? 0.55 : 0.35 });
+      g.stroke({ color: isSelected ? 0xff8888 : 0xff4444, width: isSelected ? 2.5 : 1.5 });
+      this.overlayLayer.addChild(g);
+    }
+
     if (!selectedUnitId) return;
     const unit = units[selectedUnitId];
     if (!unit) return;
@@ -323,7 +452,38 @@ export class HexMapRenderer {
   private subscribeToState(): void {
     this.unsubscribe = useGameStore.subscribe(() => {
       this.renderUnits();
+      this.drawDeploymentOverlay();
     });
+  }
+
+  private drawDeploymentOverlay(): void {
+    // Remove previous deployment overlays (keep selection ring if present)
+    const toRemove = this.overlayLayer.children.filter((c) => (c as any).__deploymentOverlay);
+    for (const c of toRemove) this.overlayLayer.removeChild(c);
+
+    const state = useGameStore.getState();
+    if (state.scenarioPhase !== 'SETUP') return;
+
+    const scenario = state.currentScenario;
+    if (!scenario) return;
+
+    const pending = state.pendingDeploymentUnit;
+
+    for (const zone of scenario.deploymentZones) {
+      const color = zone.side === 'allied' ? 0x4488ff : 0xff6644;
+      const alpha = pending?.side === zone.side ? 0.35 : 0.15;
+
+      for (const { q, r } of zone.allowedHexes) {
+        const hex = this.grid.getHex({ q, r });
+        if (!hex) continue;
+
+        const g = new Graphics();
+        g.poly(hex.corners.map((c) => ({ x: c.x, y: c.y })));
+        g.fill({ color, alpha });
+        (g as any).__deploymentOverlay = true;
+        this.overlayLayer.addChild(g);
+      }
+    }
   }
 
   destroy(): void {
