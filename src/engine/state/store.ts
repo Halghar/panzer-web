@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { GameState, Unit, Phase, Command, HexData, Force, StaggeredFormationOrder } from './types';
-import { hexKey, FORCE_GRADE_MODIFIER } from './types';
+import { hexKey } from './types';
 import { VEHICLE_BLUEPRINTS } from '../units/blueprints';
 import type { TerrainType, TerrainMap, HexTile } from '../terrain/types';
 import { runSpottingPhase } from '../spotting/phase';

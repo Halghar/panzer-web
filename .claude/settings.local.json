@@ -16,7 +16,9 @@
       "Bash(Select-Object -First 100)",
       "Bash(Format-Table FullName)",
       "Bash(Get-ChildItem -Recurse -Directory)",
-      "Bash(Select-Object -First 50)"
+      "Bash(Select-Object -First 50)",
+      "Bash(Get-ChildItem -Path \"d:\\\\code\\\\panzer-web\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)"
     ]
   }
 }
