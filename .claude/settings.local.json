@@ -11,7 +11,12 @@
       "Bash(Select-Object Name)",
       "Bash(npx vitest *)",
       "Bash(Get-ChildItem -Path src -Recurse -Directory)",
-      "Bash(Get-ChildItem -Path \"d:\\\\code\\\\panzer-web\" -Recurse -Directory)"
+      "Bash(Get-ChildItem -Path \"d:\\\\code\\\\panzer-web\" -Recurse -Directory)",
+      "Bash(Get-ChildItem -Path \"d:\\\\code\\\\panzer-web\" -Recurse -Force)",
+      "Bash(Select-Object -First 100)",
+      "Bash(Format-Table FullName)",
+      "Bash(Get-ChildItem -Recurse -Directory)",
+      "Bash(Select-Object -First 50)"
     ]
   }
 }

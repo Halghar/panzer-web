@@ -146,7 +146,11 @@ export interface VehicleData {
 
   // Movement
   movementType: MovementType;
+  /** Cross-Country speed allowance (first value on Data Card, e.g. "5T 6-10" → 5) */
   movementSlow: number;
+  /** Path speed allowance (second value on Data Card, e.g. "5T 6-10" → 6). Defaults to movementSlow+1 when absent. */
+  movementPath?: number;
+  /** Road speed allowance (third value on Data Card, e.g. "5T 6-10" → 10) */
   movementFast: number;
 
   weight: number;        // tonnes

@@ -7,6 +7,8 @@ import { runSpottingPhase } from '../spotting/phase';
 import type { BasicInitiativeResult, AdvancedInitiativeResult, StaggeredInitiativeResult } from '../initiative/types';
 import { resolveBasicInitiative, resolveAdvancedInitiative, resolveStaggeredInitiative } from '../initiative/phase';
 import type { StaggeredRoundInput } from '../initiative/phase';
+import { combatPhase } from '../combat/phase';
+import type { FireDeclaration, CombatPhaseResult } from '../combat/phase';
 
 export const MAP_WIDTH = 22;
 export const MAP_HEIGHT = 34;
@@ -20,6 +22,12 @@ interface RollStaggeredInitiativeOptions {
 }
 
 interface GameStore extends GameState {
+  // --- Combat phase state (not in pure GameState to avoid circular imports) ---
+  /** Declared shots for the current Combat Phase Direct Fire Step. */
+  fireDeclarations: FireDeclaration[];
+  /** Result of the last executeCombatPhase() call, for UI display. */
+  combatPhaseResult: CombatPhaseResult | null;
+
   // Actions
   selectUnit: (instanceId: string | null) => void;
   assignCommand: (instanceId: string, command: Command) => void;
@@ -29,6 +37,16 @@ interface GameStore extends GameState {
   rollInitiative: (options: RollInitiativeOptions) => BasicInitiativeResult | AdvancedInitiativeResult;
   /** Roll Staggered Initiative (7.42) given the ordered formation pairings. */
   rollStaggeredInitiative: (options: RollStaggeredInitiativeOptions) => StaggeredInitiativeResult;
+  /** Add a fire declaration for the Direct Fire Step. */
+  addFireDeclaration: (decl: FireDeclaration) => void;
+  /** Remove all fire declarations (called automatically when entering COMBAT). */
+  clearFireDeclarations: () => void;
+  /**
+   * Execute the Direct Fire Step (4.4.1) using all declared shots.
+   * Applies damage to unit states and stores the result for UI display.
+   * Throws if initiative has not been resolved (firstPlayer is null).
+   */
+  executeCombatPhase: () => CombatPhaseResult;
 }
 
 const PHASE_ORDER: Phase[] = [
@@ -172,6 +190,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   hexMap: generateMap(),
   spottingPairs: [],
   formationFireOrder: [],
+  fireDeclarations: [],
+  combatPhaseResult: null,
 
   selectUnit: (instanceId) => set({ selectedUnitId: instanceId }),
 
@@ -259,6 +279,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     return result;
   },
 
+  addFireDeclaration: (decl) =>
+    set((state) => ({ fireDeclarations: [...state.fireDeclarations, decl] })),
+
+  clearFireDeclarations: () => set({ fireDeclarations: [], combatPhaseResult: null }),
+
+  executeCombatPhase: () => {
+    const { units, blueprints, hexMap, firstPlayer, fireDeclarations } = get();
+    if (!firstPlayer) throw new Error('Initiative not resolved — firstPlayer is null');
+    const rolls = fireDeclarations.map(() => rollD100());
+    const result = combatPhase({ declarations: fireDeclarations, units, blueprints, hexMap, firstPlayer, rolls });
+    set({ units: result.updatedUnits, combatPhaseResult: result });
+    return result;
+  },
+
   resetGame: () =>
     set({
       turn: 1,
@@ -270,5 +304,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       hexMap: generateMap(),
       spottingPairs: [],
       formationFireOrder: [],
+      fireDeclarations: [],
+      combatPhaseResult: null,
     }),
 }));
