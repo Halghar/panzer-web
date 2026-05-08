@@ -4,7 +4,8 @@ export type TerrainType =
   | 'lightGrove' | 'mediumGrove'
   | 'building' | 'brickBuilding' | 'stoneBuilding' | 'woodBuilding' | 'desertBuilding'
   | 'hill' | 'road' | 'path'
-  | 'stream' | 'gully' | 'ford';
+  | 'stream' | 'gully' | 'ford'
+  | 'river' | 'bridge';
 
 export type CoverLevel = 'none' | 'light' | 'medium' | 'heavy';
 
@@ -40,6 +41,10 @@ export const TERRAIN_DATA: Record<TerrainType, TerrainProps> = {
   stream:         { cover: 'none',   moveCost: 2,   height: -1, blocksLOS: false, color: 0x4080c0 },
   gully:          { cover: 'none',   moveCost: 2,   height: -1, blocksLOS: false, color: 0x806040 },
   ford:           { cover: 'none',   moveCost: 3,   height: -1, blocksLOS: false, color: 0x50a0d0 },
+  // Major river: impassable except through ford/bridge hexes (§4.5.1.1.2)
+  river:          { cover: 'none',   moveCost: 99,  height: -1, blocksLOS: false, color: 0x2060b0 },
+  // Bridge: treated as continuation of the connecting road/path (§4.5.1.1.2)
+  bridge:         { cover: 'none',   moveCost: 0.5, height: 0,  blocksLOS: false, color: 0xc8b060 },
 };
 
 // ---------------------------------------------------------------------------
@@ -75,7 +80,7 @@ export function terrainCover(tile: HexTile): CoverLevel {
  */
 export function vehicleGroundHeight(tile: HexTile): number {
   const t = tile.terrain;
-  if (t === 'stream' || t === 'gully' || t === 'ford') return tile.hillLevel - 1;
+  if (t === 'stream' || t === 'gully' || t === 'ford' || t === 'river') return tile.hillLevel - 1;
   return tile.hillLevel;
 }
 

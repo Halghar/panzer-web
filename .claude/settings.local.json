@@ -18,7 +18,8 @@
       "Bash(Get-ChildItem -Recurse -Directory)",
       "Bash(Select-Object -First 50)",
       "Bash(Get-ChildItem -Path \"d:\\\\code\\\\panzer-web\" -Force)",
-      "Bash(Select-Object Name, PSIsContainer)"
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(pdftotext \"Panzer_CONSOLIDATED_RULES_February2026.pdf\" -)"
     ]
   }
 }

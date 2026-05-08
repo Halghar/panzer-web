@@ -39,6 +39,8 @@ const MOVEMENT_TEC: Record<TerrainType, TecEntry> = {
   stream:         { th: 'P', w: 'P', turn: 0 },
   gully:          { th: 2,   w: 'P', turn: 2 },
   ford:           { th: 3,   w: 'P', turn: 0 },
+  river:          { th: 'P', w: 'P', turn: 0 },
+  bridge:         { th: 1,   w: 1,   turn: 0 },
 };
 
 /**
